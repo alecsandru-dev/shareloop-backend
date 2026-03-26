@@ -27,7 +27,7 @@ const pool = new Pool({
  * AUTH0 CONFIG
  * ============================
  */
-const AUTH0_DOMAIN = "dev-iio7cnh3sn4jc7pd.us.auth0.com"; // <-- your domain
+const AUTH0_DOMAIN = "dev-iio7cnh3sn4jc7pd.us.auth0.com";
 
 const client = jwksRsa({
   jwksUri: `https://${AUTH0_DOMAIN}/.well-known/jwks.json`,
@@ -110,6 +110,93 @@ app.post("/sync-user", verifyToken, async (req, res) => {
   } catch (err) {
     console.error("Sync error:", err);
     res.status(500).send("Error syncing user");
+  }
+});
+
+/**
+ * ============================
+ * CREATE PAIRING TOKEN
+ * ============================
+ */
+app.post("/create-token", verifyToken, async (req, res) => {
+  const token = Math.random().toString(36).substring(2, 10);
+
+  try {
+    await pool.query(
+      `
+      INSERT INTO pairing_tokens (token, created_by)
+      VALUES ($1, $2)
+      `,
+      [token, req.user.sub]
+    );
+
+    console.log("Token created:", token);
+
+    res.json({ token });
+  } catch (err) {
+    console.error("Token error:", err);
+    res.status(500).send("Error creating token");
+  }
+});
+
+/**
+ * ============================
+ * JOIN LOOP USING TOKEN
+ * ============================
+ */
+app.post("/join", verifyToken, async (req, res) => {
+  const { token } = req.body;
+
+  try {
+    const tokenResult = await pool.query(
+      `
+      SELECT * FROM pairing_tokens
+      WHERE token = $1 AND used = false
+      `,
+      [token]
+    );
+
+    if (tokenResult.rows.length === 0) {
+      return res.status(400).send("Invalid or used token");
+    }
+
+    const creator = tokenResult.rows[0].created_by;
+
+    // Create loop
+    const loopResult = await pool.query(
+      `
+      INSERT INTO loops DEFAULT VALUES
+      RETURNING *
+      `
+    );
+
+    const loopId = loopResult.rows[0].id;
+
+    // Add both users
+    await pool.query(
+      `
+      INSERT INTO loop_members (loop_id, user_id)
+      VALUES ($1, $2), ($1, $3)
+      `,
+      [loopId, creator, req.user.sub]
+    );
+
+    // Mark token as used
+    await pool.query(
+      `
+      UPDATE pairing_tokens
+      SET used = true
+      WHERE token = $1
+      `,
+      [token]
+    );
+
+    console.log("Loop created:", loopId);
+
+    res.json({ loopId });
+  } catch (err) {
+    console.error("Join error:", err);
+    res.status(500).send("Error joining loop");
   }
 });
 
